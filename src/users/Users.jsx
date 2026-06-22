@@ -22,6 +22,7 @@ import {
   updateDoc,
   deleteDoc,
 } from "firebase/firestore";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { db } from "../firebase";
 
 export default function Users() {
@@ -41,15 +42,33 @@ export default function Users() {
     name: "",
     student_number: "",
     employee_number: "",
-    mobile_number: "", // Added to support Visitors
+    mobile_number: "",
   });
 
   const [selectedRole, setSelectedRole] = useState("Student");
   const [isProcessing, setIsProcessing] = useState(false);
 
   const navigate = useNavigate();
-  const currentUserRole = "super_admin";
 
+  // 🛡️ DYNAMIC AUTHENTICATED SESSION STATE
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [currentUserRole, setCurrentUserRole] = useState(null);
+
+  // 1. Listen for the logged-in user dynamically
+  useEffect(() => {
+    const auth = getAuth();
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setCurrentUserId(user.uid);
+      } else {
+        setCurrentUserId(null);
+        setCurrentUserRole(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Fetch all users from Firestore
   useEffect(() => {
     const usersRef = collection(db, "users");
     const unsubscribe = onSnapshot(usersRef, (snapshot) => {
@@ -62,13 +81,27 @@ export default function Users() {
     return () => unsubscribe();
   }, []);
 
+  // 3. Dynamically determine the logged-in user's role based on the fetched data
+  useEffect(() => {
+    if (currentUserId && users.length > 0) {
+      const loggedInRecord = users.find((u) => u.uid === currentUserId);
+      if (loggedInRecord) {
+        // Normalize role to lowercase with underscores to prevent mismatch errors
+        const role = (loggedInRecord.role || "student")
+          .toLowerCase()
+          .replace(" ", "_");
+        setCurrentUserRole(role);
+      }
+    }
+  }, [currentUserId, users]);
+
+  // Global click listener to safely close menus on outside clicks
   useEffect(() => {
     const closeMenu = () => setActiveMenu(null);
     document.addEventListener("click", closeMenu);
     return () => document.removeEventListener("click", closeMenu);
   }, []);
 
-  // Update dynamic ID to include Mobile Number for Visitors
   const getDynamicID = (user) => {
     const autoParkId = user.uid
       ? user.uid.length >= 10
@@ -134,6 +167,40 @@ export default function Users() {
   const executeAction = async () => {
     if (!modalConfig.user) return;
 
+    if (modalConfig.user.uid === currentUserId) {
+      alert(
+        "Unauthorized Action: You cannot alter your own administrative privilege profile.",
+      );
+      setModalConfig({ isOpen: false, type: null, user: null });
+      return;
+    }
+
+    // Normalize target user's role to check permissions accurately
+    const targetRole = (modalConfig.user.role || "student")
+      .toLowerCase()
+      .replace(" ", "_");
+
+    // 🔒 Prevent Super Admin from modifying another Super Admin
+    if (currentUserRole === "super_admin" && targetRole === "super_admin") {
+      alert(
+        "Unauthorized Action: Super Administrators cannot modify fellow Super Administrator accounts.",
+      );
+      setModalConfig({ isOpen: false, type: null, user: null });
+      return;
+    }
+
+    // 🔒 Prevent Admin from modifying Admins and Super Admins
+    if (
+      currentUserRole === "admin" &&
+      (targetRole === "super_admin" || targetRole === "admin")
+    ) {
+      alert(
+        "Unauthorized Action: Administrators cannot modify other administrator accounts.",
+      );
+      setModalConfig({ isOpen: false, type: null, user: null });
+      return;
+    }
+
     setIsProcessing(true);
 
     try {
@@ -175,16 +242,15 @@ export default function Users() {
     }
   };
 
-  // Helper to color-code roles appropriately
   const getRoleBadgeStyle = (role) => {
-    switch (role?.toLowerCase()) {
+    switch ((role || "").toLowerCase().replace(" ", "_")) {
       case "super_admin":
         return "bg-purple-100 text-purple-700";
       case "admin":
         return "bg-blue-100 text-blue-700";
       case "faculty":
         return "bg-emerald-100 text-emerald-700";
-      case "administrative staff":
+      case "administrative_staff":
         return "bg-teal-100 text-teal-700";
       case "visitor":
         return "bg-amber-100 text-amber-700";
@@ -194,9 +260,23 @@ export default function Users() {
     }
   };
 
+  const getModalSubmitBtnStyle = () => {
+    const baseClasses =
+      "px-4 py-2 text-white font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50 flex items-center gap-2";
+    if (modalConfig.type === "delete")
+      return `${baseClasses} bg-red-600 hover:bg-red-700 shadow-red-600/20`;
+    if (modalConfig.type === "suspend")
+      return `${baseClasses} bg-amber-600 hover:bg-amber-700 shadow-amber-600/20`;
+    return `${baseClasses} bg-royalBlue hover:bg-blue-700 shadow-royalBlue/20`;
+  };
+
+  // Find the actual logged-in user record dynamically
+  const loggedInUserRecord = users.find((u) => u.uid === currentUserId);
+
   return (
     <div className="space-y-6 pb-10">
-      <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+      {/* HEADER SECTION */}
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
         <div>
           <h2 className="text-2xl md:text-3xl font-extrabold text-royalBlue tracking-tight flex items-center gap-2">
             <UsersIcon className="w-8 h-8 text-gold" />
@@ -207,6 +287,41 @@ export default function Users() {
           </p>
         </div>
 
+        {/* 👤 CURRENT LOGGED IN USER MINI-CARD */}
+        {loggedInUserRecord && (
+          <div className="flex items-center gap-3 bg-slate-50 border border-slate-200/80 rounded-xl p-3 shadow-inner max-w-sm">
+            {loggedInUserRecord.profile_image ? (
+              <img
+                src={loggedInUserRecord.profile_image}
+                className="w-10 h-10 rounded-full object-cover ring-2 ring-royalBlue/20"
+                alt=""
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm bg-purple-100 text-purple-700 border border-purple-300 shadow-sm">
+                {loggedInUserRecord.name
+                  ? loggedInUserRecord.name.charAt(0).toUpperCase()
+                  : "A"}
+              </div>
+            )}
+            <div className="pr-2">
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs font-black text-slate-800 leading-none">
+                  {loggedInUserRecord.name || "Loading..."}
+                </p>
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full font-extrabold tracking-wide uppercase bg-purple-600 text-white shadow-sm">
+                  You
+                </span>
+              </div>
+              <p className="text-[11px] font-medium text-slate-400 mt-0.5">
+                {loggedInUserRecord.email}
+              </p>
+            </div>
+          </div>
+        )}
+      </header>
+
+      {/* SEARCH CONTROL BAR */}
+      <div className="flex justify-end">
         <div className="relative w-full md:w-72">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -217,8 +332,9 @@ export default function Users() {
             className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-royalBlue/20 focus:border-royalBlue outline-none transition-all shadow-sm"
           />
         </div>
-      </header>
+      </div>
 
+      {/* USERS DIRECTORY TABLE CONTAINER */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-visible">
         <div className="overflow-x-visible">
           <table className="w-full text-left border-collapse">
@@ -233,15 +349,30 @@ export default function Users() {
             <tbody className="divide-y divide-slate-100">
               {filteredUsers.map((user) => {
                 const idInfo = getDynamicID(user);
-                // Fix: Ensure "Administrative Staff" doesn't trigger the Admin styles
-                const isAdmin =
-                  user.role === "admin" || user.role === "super_admin";
+
+                // Normalizing roles dynamically to handle casing differences in Firebase
+                const normalizedRole = (user.role || "student")
+                  .toLowerCase()
+                  .replace(" ", "_");
+                const isTargetAdmin =
+                  normalizedRole === "admin" ||
+                  normalizedRole === "super_admin";
+                const isSelf = user.uid === currentUserId;
+
+                // 🛡️ MODIFIED: Restrict modifying privileges dynamically
+                const canModifyThisUser =
+                  !isSelf &&
+                  ((currentUserRole === "super_admin" &&
+                    normalizedRole !== "super_admin") ||
+                    (currentUserRole === "admin" &&
+                      normalizedRole !== "super_admin" &&
+                      normalizedRole !== "admin"));
 
                 return (
                   <tr
                     key={user.uid}
                     onClick={() => handleViewUser(user.uid)}
-                    className={`hover:bg-slate-50 cursor-pointer transition-colors group ${isAdmin ? "bg-blue-50/30 hover:bg-blue-50/60" : ""} ${user.status === "suspended" ? "opacity-60 bg-slate-50" : ""}`}
+                    className={`hover:bg-slate-50 cursor-pointer transition-colors group ${isTargetAdmin ? "bg-blue-50/20 hover:bg-blue-50/50" : ""} ${user.status === "suspended" ? "opacity-60 bg-slate-50" : ""} ${isSelf ? "bg-purple-50/10 hover:bg-purple-50/30" : ""}`}
                   >
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
@@ -253,7 +384,7 @@ export default function Users() {
                           />
                         ) : (
                           <div
-                            className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm border ${isAdmin ? "border-royalBlue bg-blue-100 text-royalBlue" : "border-slate-200 bg-slate-100 text-slate-600"}`}
+                            className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm border ${isTargetAdmin ? "border-royalBlue bg-blue-100 text-royalBlue" : "border-slate-200 bg-slate-100 text-slate-600"}`}
                           >
                             {user.name
                               ? user.name.charAt(0).toUpperCase()
@@ -263,8 +394,13 @@ export default function Users() {
                         <div>
                           <p className="text-sm font-bold text-slate-800 flex items-center gap-1">
                             {user.name}
-                            {isAdmin && (
+                            {isTargetAdmin && (
                               <UserCheck className="w-3 h-3 text-royalBlue" />
+                            )}
+                            {isSelf && (
+                              <span className="text-[9px] px-1 rounded-sm bg-purple-100 text-purple-700 font-extrabold uppercase">
+                                You
+                              </span>
                             )}
                             {user.status === "suspended" && (
                               <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-sm bg-amber-100 text-amber-700 font-bold uppercase tracking-wider">
@@ -305,9 +441,9 @@ export default function Users() {
                       <span
                         className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${getRoleBadgeStyle(user.role)}`}
                       >
-                        {user.role === "super_admin" ? (
+                        {normalizedRole === "super_admin" ? (
                           <ShieldAlert className="w-3 h-3" />
-                        ) : user.role === "admin" ? (
+                        ) : normalizedRole === "admin" ? (
                           <Shield className="w-3 h-3" />
                         ) : null}
                         {(user.role || "Student").toUpperCase()}
@@ -316,12 +452,11 @@ export default function Users() {
 
                     <td className="px-6 py-4 relative">
                       <div className="flex items-center justify-end gap-2">
-                        {currentUserRole === "super_admin" && (
+                        {canModifyThisUser ? (
                           <div className="relative">
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                e.nativeEvent.stopImmediatePropagation();
                                 setActiveMenu(
                                   activeMenu === user.uid ? null : user.uid,
                                 );
@@ -332,7 +467,10 @@ export default function Users() {
                             </button>
 
                             {activeMenu === user.uid && (
-                              <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-slate-200 rounded-xl shadow-lg z-50 overflow-hidden py-1">
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                className="absolute right-0 top-full mt-1 w-48 bg-white border border-slate-200 rounded-xl shadow-lg z-50 overflow-hidden py-1"
+                              >
                                 <button
                                   onClick={(e) =>
                                     handleMenuAction(e, "edit", user)
@@ -342,15 +480,19 @@ export default function Users() {
                                   <Edit2 className="w-4 h-4 text-slate-400" />{" "}
                                   Edit Details
                                 </button>
-                                <button
-                                  onClick={(e) =>
-                                    handleMenuAction(e, "role", user)
-                                  }
-                                  className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
-                                >
-                                  <Shield className="w-4 h-4 text-blue-500" />{" "}
-                                  Manage Role
-                                </button>
+
+                                {currentUserRole === "super_admin" && (
+                                  <button
+                                    onClick={(e) =>
+                                      handleMenuAction(e, "role", user)
+                                    }
+                                    className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                                  >
+                                    <Shield className="w-4 h-4 text-blue-500" />{" "}
+                                    Manage Role
+                                  </button>
+                                )}
+
                                 <div className="h-px bg-slate-100 my-1"></div>
                                 <button
                                   onClick={(e) =>
@@ -375,6 +517,8 @@ export default function Users() {
                               </div>
                             )}
                           </div>
+                        ) : (
+                          <div className="w-8 h-8" />
                         )}
                         <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-royalBlue transition-colors group-hover:translate-x-1" />
                       </div>
@@ -422,7 +566,7 @@ export default function Users() {
                           name: e.target.value,
                         })
                       }
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-royalBlue focus:ring-1 focus:ring-royalBlue bg-slate-50"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-royalBlue bg-slate-50"
                     />
                   </div>
                   <div>
@@ -443,7 +587,7 @@ export default function Users() {
                         })
                       }
                       placeholder="Leave blank if N/A"
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-royalBlue focus:ring-1 focus:ring-royalBlue bg-slate-50"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-royalBlue bg-slate-50"
                     />
                   </div>
                   <div>
@@ -464,7 +608,7 @@ export default function Users() {
                         })
                       }
                       placeholder="Leave blank if N/A"
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-royalBlue focus:ring-1 focus:ring-royalBlue bg-slate-50"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-royalBlue bg-slate-50"
                     />
                   </div>
                   <div>
@@ -485,7 +629,7 @@ export default function Users() {
                         })
                       }
                       placeholder="Leave blank if N/A"
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-royalBlue focus:ring-1 focus:ring-royalBlue bg-slate-50"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-royalBlue bg-slate-50"
                     />
                   </div>
                 </div>
@@ -494,11 +638,11 @@ export default function Users() {
               {modalConfig.type === "role" && (
                 <div className="space-y-4">
                   <p>
-                    Change the access level for{" "}
+                    Change access level for{" "}
                     <strong className="text-slate-800">
                       {modalConfig.user?.name}
                     </strong>
-                    . Please ensure they are authorized for this access level.
+                    .
                   </p>
                   <div>
                     <label className="block text-sm font-bold text-slate-700 mb-1">
@@ -507,7 +651,7 @@ export default function Users() {
                     <select
                       value={selectedRole}
                       onChange={(e) => setSelectedRole(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-royalBlue focus:ring-1 focus:ring-royalBlue bg-slate-50"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none bg-slate-50"
                     >
                       <option value="Student">Student</option>
                       <option value="Faculty">Faculty</option>
@@ -515,7 +659,6 @@ export default function Users() {
                         Administrative Staff
                       </option>
                       <option value="Visitor">Visitor</option>
-                      <hr className="my-1" />
                       <option value="admin">Admin</option>
                       <option value="super_admin">Super Admin</option>
                     </select>
@@ -525,12 +668,11 @@ export default function Users() {
 
               {modalConfig.type === "delete" && (
                 <p>
-                  Are you absolutely sure you want to permanently delete{" "}
+                  Permanently delete{" "}
                   <strong className="text-slate-800">
                     {modalConfig.user?.name}
                   </strong>
-                  ? This will remove their profile and registered vehicles. This
-                  action cannot be undone.
+                  ? This action cannot be undone.
                 </p>
               )}
 
@@ -543,10 +685,7 @@ export default function Users() {
                   <strong className="text-slate-800">
                     {modalConfig.user?.name}
                   </strong>
-                  ?{" "}
-                  {modalConfig.user?.status === "suspended"
-                    ? "They will regain full access to log into the ParkMatic system."
-                    : "They will be unable to log into the ParkMatic system until their account is reactivated."}
+                  ?
                 </p>
               )}
             </div>
@@ -564,19 +703,9 @@ export default function Users() {
               <button
                 onClick={executeAction}
                 disabled={isProcessing}
-                className={`px-4 py-2 text-white font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50 flex items-center gap-2 ${
-                  modalConfig.type === "delete"
-                    ? "bg-red-600 hover:bg-red-700 shadow-red-600/20"
-                    : modalConfig.type === "suspend"
-                      ? "bg-amber-600 hover:bg-amber-700 shadow-amber-600/20"
-                      : "bg-royalBlue hover:bg-blue-700 shadow-royalBlue/20"
-                }`}
+                className={getModalSubmitBtnStyle()}
               >
-                {isProcessing
-                  ? "Processing..."
-                  : modalConfig.type === "suspend"
-                    ? `Confirm ${modalConfig.user?.status === "suspended" ? "Unsuspend" : "Suspend"}`
-                    : `Confirm ${modalConfig.type}`}
+                {isProcessing ? "Processing..." : `Confirm ${modalConfig.type}`}
               </button>
             </div>
           </div>
